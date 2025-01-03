@@ -1,15 +1,18 @@
 import logging
 import numpy as np
 import time
-import csv
 import os
 import matplotlib.pyplot as plt
+import pandas as pd  # <-- NEW: Use pandas for CSV reading/writing
+
+PARENT_DIR = os.path.dirname(os.path.abspath(__file__))
+
 
 ###############################################################################
 # Logging Setup
 ###############################################################################
 logging.basicConfig(
-    filename="sorting_benchmarks.log",
+    filename=os.path.join(PARENT_DIR, "sorting_benchmark.log"),
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
 )
@@ -108,12 +111,8 @@ def _partition(arr, low, high):
 ###############################################################################
 # Dictionary of available algorithms + time complexities
 ###############################################################################
-# We’ll map each algorithm to its approximate worst-case Big O, for plotting:
-#   'selection', 'bubble', 'insertion' -> O(n^2)
-#   'merge', 'quick' -> O(n log n)
-#
 ALGORITHMS = {
-    "selection": {"function": selection_sort, "complexity": "n^2"},  # Theoretical Big O
+    "selection": {"function": selection_sort, "complexity": "n^2"},
     "bubble": {"function": bubble_sort, "complexity": "n^2"},
     "insertion": {"function": insertion_sort, "complexity": "n^2"},
     "merge": {"function": merge_sort, "complexity": "n log n"},
@@ -127,7 +126,7 @@ ALGORITHMS = {
 def benchmark_algorithm(algorithm_name, sizes, num_runs=3):
     """
     Benchmarks the specified sorting algorithm for each size in 'sizes'.
-    Returns a list of dicts: [{'algorithm', 'array_size', 'average_time_s'}, ...]
+    Returns a list of dicts: [{'algorithm', 'array_size', 'average_time_ns'}, ...]
     """
     algo_info = ALGORITHMS[algorithm_name]
     sort_func = algo_info["function"]
@@ -143,9 +142,9 @@ def benchmark_algorithm(algorithm_name, sizes, num_runs=3):
             arr = np.random.randint(1, 1001, size=n)
 
             # Time the sort
-            start_time = time.perf_counter()
+            start_time = time.perf_counter_ns()
             sort_func(arr)  # Not logging inside the loop
-            end_time = time.perf_counter()
+            end_time = time.perf_counter_ns()
 
             total_time += end_time - start_time
 
@@ -155,7 +154,7 @@ def benchmark_algorithm(algorithm_name, sizes, num_runs=3):
         )
 
         results.append(
-            {"algorithm": algorithm_name, "array_size": n, "average_time_s": avg_time}
+            {"algorithm": algorithm_name, "array_size": n, "average_time_ns": avg_time}
         )
 
     return results
@@ -177,51 +176,64 @@ def benchmark_all_algorithms(sizes, num_runs=3):
 
 
 ###############################################################################
-# Save Results to CSV
+# Save/Read Results with pandas
 ###############################################################################
 def save_results_to_csv(results, filename="sorting_results.csv"):
     """
-    Saves the benchmark results (list of dictionaries) to a CSV file.
+    Saves the benchmark results (list of dictionaries) to a CSV file using pandas.
+    Appends if the file exists, otherwise writes a new file.
     """
+    df = pd.DataFrame(results)
     file_exists = os.path.isfile(filename)
-    with open(filename, "a", newline="") as csvfile:
-        writer = csv.DictWriter(
-            csvfile, fieldnames=["algorithm", "array_size", "average_time_s"]
-        )
-        if not file_exists:
-            writer.writeheader()
-        for r in results:
-            writer.writerow(r)
-
+    # If file exists, append; otherwise write new
+    df.to_csv(
+        filename, mode="a" if file_exists else "w", header=not file_exists, index=False
+    )
     logging.info(f"Results saved/appended to {filename}")
+
+
+def read_results_from_csv(filename="sorting_results.csv"):
+    """
+    Reads the benchmark results from a CSV file into a pandas DataFrame.
+    Returns the DataFrame or None if the file doesn't exist.
+    """
+    if os.path.isfile(filename):
+        df = pd.read_csv(filename)
+        logging.info(f"Results read from {filename}")
+        return df
+    else:
+        logging.warning(f"No existing file {filename} to read from.")
+        return None
 
 
 ###############################################################################
 # Plotting
 ###############################################################################
-def plot_results(results, output_image="sorting_comparison.png"):
+def plot_results(
+    df,
+    output_image_linear="sorting_comparison_linear.png",
+    output_image_log="sorting_comparison_log.png",
+):
     """
-    Given results (list of dicts with: algorithm, array_size, average_time_s),
+    Given a pandas DataFrame with columns [algorithm, array_size, average_time_ns],
     plots empirical times vs. theoretical complexity for each sorting method.
+    Produces two plots:
+      1) Linear scale (x- and y-axes)
+      2) Log scale (x- and y-axes)
     """
     # Group results by algorithm
     data_by_algo = {}
-    for r in results:
-        algo = r["algorithm"]
-        size = r["array_size"]
-        time_s = r["average_time_s"]
+    for row in df.itertuples(index=False):
+        algo = row.algorithm
+        size = row.array_size
+        time_s = row.average_time_ns
         data_by_algo.setdefault(algo, []).append((size, time_s))
 
     # Sort data by N for each algorithm
     for algo in data_by_algo:
         data_by_algo[algo].sort(key=lambda x: x[0])
 
-    # Prepare figure
-    plt.figure(figsize=(10, 6))
-
-    # Define simple theoretical models (for worst-case):
-    #   n^2 (selection, bubble, insertion)
-    #   n log n (merge, quick)
+    # Theoretical models
     def theoretical_n2(n):
         return n**2
 
@@ -236,11 +248,16 @@ def plot_results(results, output_image="sorting_comparison.png"):
         "quick": "purple",
     }
 
+    ###################################################################
+    # 1) Linear Scale Plot
+    ###################################################################
+    plt.figure(figsize=(10, 6))
+
     for algo, vals in data_by_algo.items():
-        # Extract real data
         sizes = [v[0] for v in vals]
         times = [v[1] for v in vals]
 
+        # Empirical
         plt.plot(
             sizes,
             times,
@@ -249,13 +266,60 @@ def plot_results(results, output_image="sorting_comparison.png"):
             label=f"{algo.capitalize()} (empirical)",
         )
 
-        # Determine the theoretical curve
+        # Theoretical
         if ALGORITHMS[algo]["complexity"] == "n^2":
             theo_vals = [theoretical_n2(s) for s in sizes]
         else:
             theo_vals = [theoretical_nlogn(s) for s in sizes]
 
-        # Scale the theoretical curve for visual comparison
+        # Scale for visual comparison
+        max_empirical = max(times)
+        max_theoretical = max(theo_vals)
+        scale = max_empirical / max_theoretical if max_theoretical != 0 else 1
+        theo_scaled = [v * scale for v in theo_vals]
+
+        plt.plot(
+            sizes,
+            theo_scaled,
+            linestyle="--",
+            color=colors.get(algo, "black"),
+            label=f"{algo.capitalize()} - {ALGORITHMS[algo]['complexity']} (theoretical scaled)",
+        )
+
+    plt.xlabel("Array Size (N)")
+    plt.ylabel("Time (Nanoseconds)")
+    plt.title("Empirical vs. Theoretical Complexity (Linear Scale)")
+    plt.legend()
+    plt.grid(True)
+    plt.savefig(output_image_linear, dpi=300)
+    logging.info(f"Linear scale comparison plot saved to {output_image_linear}")
+    plt.close()
+
+    ###################################################################
+    # 2) Log-Log Scale Plot
+    ###################################################################
+    plt.figure(figsize=(10, 6))
+
+    for algo, vals in data_by_algo.items():
+        sizes = [v[0] for v in vals]
+        times = [v[1] for v in vals]
+
+        # Empirical
+        plt.plot(
+            sizes,
+            times,
+            marker="o",
+            color=colors.get(algo, "black"),
+            label=f"{algo.capitalize()} (empirical)",
+        )
+
+        # Theoretical
+        if ALGORITHMS[algo]["complexity"] == "n^2":
+            theo_vals = [theoretical_n2(s) for s in sizes]
+        else:
+            theo_vals = [theoretical_nlogn(s) for s in sizes]
+
+        # Scale for visual comparison
         max_empirical = max(times)
         max_theoretical = max(theo_vals)
         scale = max_empirical / max_theoretical if max_theoretical != 0 else 1
@@ -269,15 +333,15 @@ def plot_results(results, output_image="sorting_comparison.png"):
             label=f"{algo.capitalize()} (theoretical scaled)",
         )
 
-    plt.xlabel("Array Size (N)")
-    plt.ylabel("Time (seconds)")
-    plt.title("Empirical vs. Theoretical Complexity (All Algorithms)")
+    plt.xscale("log")
+    plt.yscale("log")
+    plt.xlabel("Array Size (N) [Log Scale]")
+    plt.ylabel("Time (Nanoseconds) [Log Scale]")
+    plt.title("Empirical vs. Theoretical Complexity (Log Scale)")
     plt.legend()
     plt.grid(True)
-
-    # Save figure
-    plt.savefig(output_image, dpi=300)
-    logging.info(f"Comparison plot saved to {output_image}")
+    plt.savefig(output_image_log, dpi=300)
+    logging.info(f"Log scale comparison plot saved to {output_image_log}")
     plt.close()
 
 
@@ -293,12 +357,22 @@ def main():
     # Benchmark all algorithms
     all_results = benchmark_all_algorithms(sizes=sizes, num_runs=3)
 
-    # Save the results to CSV
-    save_results_to_csv(all_results, filename="sorting_results.csv")
+    # Save the results to CSV (append if exists, otherwise create new)
+    res_filepath = os.path.join(PARENT_DIR, "sorting_results.csv")
+    save_results_to_csv(all_results, filename=res_filepath)
 
-    # Plot the combined results
-    # (We could read from CSV, but since we already have 'all_results', we can use that)
-    plot_results(all_results, output_image="sorting_comparison.png")
+    # Read the combined results from CSV into a pandas DataFrame
+    df = read_results_from_csv(filename=res_filepath)
+
+    # If we have valid data, plot
+    if df is not None and not df.empty:
+        plot_results(
+            df,
+            output_image_linear=os.path.join(
+                PARENT_DIR, "sorting_comparison_linear.png"
+            ),
+            output_image_log=os.path.join(PARENT_DIR, "sorting_comparison_log.png"),
+        )
 
     logging.info("Benchmark completed for all sorting algorithms")
 
