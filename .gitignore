@@ -177,3 +177,6 @@ cython_debug/
 # Compresed files
 *.zip
 *.tar*
+
+# Ignore zone identifier
+*Zone.Identifier
