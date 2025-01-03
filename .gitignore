@@ -173,3 +173,7 @@ cython_debug/
 # Ignroe the log files
 *.log
 *.out
+
+# Compresed files
+*.zip
+*.tar*
